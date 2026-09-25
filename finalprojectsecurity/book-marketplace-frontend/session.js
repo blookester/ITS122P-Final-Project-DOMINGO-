@@ -1,6 +1,6 @@
 /* Shared server-session guard for all authenticated Librowse pages. */
 (function () {
-    const API_BASE = (window.LIBROWSE_API_BASE ? String(window.LIBROWSE_API_BASE).replace(/\/$/, "") : `${window.location.protocol === "https:" ? "https:" : "http:"}//${window.location.hostname || "127.0.0.1"}:8000/api`);
+    const API_BASE = (window.LIBROWSE_API_BASE ? String(window.LIBROWSE_API_BASE).replace(/\/$/, "") : (window.location.port === "8000" ? `${window.location.protocol === "https:" ? "https:" : "http:"}//${window.location.hostname || "127.0.0.1"}:8000/api` : "/api"));
     const TOKEN_KEY = "librowseSessionToken";
     const USER_KEY = "librowseCurrentUser";
 
