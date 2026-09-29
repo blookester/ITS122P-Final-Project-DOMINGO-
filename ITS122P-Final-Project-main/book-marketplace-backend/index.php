@@ -18,6 +18,7 @@ echo json_encode([
     'status'    => 'ok',
     'database'  => $dbStatus,
     'endpoints' => [
+        'GET|POST /api/auth.php?action=validate|login|register|logout',
         'GET|POST /api/user.php',
         'GET|POST /api/book_categories.php',
         'GET|POST /api/books_catalog.php',

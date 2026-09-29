@@ -19,16 +19,9 @@ $crud = new Crud(
     required: ['category_id', 'managed_by_admin_id', 'title', 'author', 'isbn'],
 );
 
-header('Access-Control-Allow-Origin: *');
-header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS');
-header('Access-Control-Allow-Headers: Content-Type');
 
 $method = $_SERVER['REQUEST_METHOD'];
-
-if ($method === 'OPTIONS') {
-    http_response_code(204);
-    exit;
-}
+$authenticatedUser = require_authenticated_user($pdo);
 
 /**
  * Normalizes whatever the client sent for categories into a clean,
@@ -114,6 +107,9 @@ try {
             break;
 
         case 'POST':
+            if (!in_array($authenticatedUser['role'], ['Customer', 'Admin'], true)) {
+                Response::error('Only Customers and Administrators may create book catalog entries.', 403);
+            }
             $body = read_json_body();
             $categoryIds = extract_category_ids($body);
 
@@ -122,8 +118,20 @@ try {
             }
 
             /* category_id keeps the first selected category, satisfying the
-               existing NOT NULL foreign key on BOOKS_CATALOG */
+               existing NOT NULL foreign key on BOOKS_CATALOG. The schema also
+               requires an admin owner; Customer submissions use the first
+               active administrator rather than trusting a client-supplied ID. */
             $body['category_id'] = $categoryIds[0];
+            if ($authenticatedUser['role'] === 'Customer') {
+                $adminStmt = $pdo->query("SELECT user_id FROM `USER` WHERE role = 'Admin' AND status = 'Active' ORDER BY user_id ASC LIMIT 1");
+                $adminId = $adminStmt->fetchColumn();
+                if (!$adminId) {
+                    Response::error('No active administrator is available to manage this catalog entry.', 503);
+                }
+                $body['managed_by_admin_id'] = (int) $adminId;
+            } else {
+                $body['managed_by_admin_id'] = (int) ($body['managed_by_admin_id'] ?? $authenticatedUser['user_id']);
+            }
 
             $created = $crud->create($body);
             save_category_map($pdo, (int) $created['book_id'], $categoryIds);
@@ -134,6 +142,7 @@ try {
 
         case 'PUT':
         case 'PATCH':
+            require_authenticated_user($pdo, ['Admin']);
             $id = $_GET['id'] ?? null;
             if ($id === null) {
                 Response::error("Query parameter 'book_id' (as ?id=) is required for updates.", 400);
@@ -164,6 +173,7 @@ try {
             break;
 
         case 'DELETE':
+            require_authenticated_user($pdo, ['Admin']);
             $id = $_GET['id'] ?? null;
             if ($id === null) {
                 Response::error("Query parameter 'book_id' (as ?id=) is required for deletes.", 400);

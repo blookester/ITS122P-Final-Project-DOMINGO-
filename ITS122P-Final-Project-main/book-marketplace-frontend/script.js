@@ -8,8 +8,17 @@
    PHP back-end will run at: http://127.0.0.1:8000/
    API files are served from: /api/
 */
-const API_BASE =
-    "http://127.0.0.1:8000/api";
+function librowseApiBase() {
+    if (window.LIBROWSE_API_BASE) return String(window.LIBROWSE_API_BASE).replace(/\/$/, '');
+    const host = window.location.hostname || '127.0.0.1';
+    const port = window.location.port;
+    if (port === '8000') {
+        const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:';
+        return `${protocol}//${host}:8000/api`;
+    }
+    return '/api';
+}
+const API_BASE = librowseApiBase();
 
 
 /* GLOBAL DATA */
@@ -36,6 +45,8 @@ let inventoryMap = {};
 let categoryMap = {};
 
 let currentUser = null;
+const SESSION_TOKEN_KEY = "librowseSessionToken";
+const SESSION_USER_KEY = "librowseCurrentUser";
 
 
 /* AUTH HELPERS */
@@ -45,8 +56,8 @@ function loadCurrentUser() {
     try {
 
         const stored =
-            localStorage.getItem(
-                "librowseCurrentUser"
+            sessionStorage.getItem(
+                SESSION_USER_KEY
             );
 
         currentUser =
@@ -74,7 +85,7 @@ function updateAuthStatusUI() {
     }
 
 
-    if (!currentUser) {
+    if (!currentUser || !sessionStorage.getItem(SESSION_TOKEN_KEY)) {
 
         authStatus.innerHTML = `
             <a href="login.html">
@@ -111,21 +122,14 @@ function updateAuthStatusUI() {
 
         logoutButton.addEventListener(
             "click",
-            function () {
-
-                localStorage.removeItem(
-                    "librowseCurrentUser"
-                );
-
+            async function () {
+                if (window.librowseAuth) {
+                    await window.librowseAuth.logout();
+                }
                 currentUser = null;
-
                 updateAuthStatusUI();
-
                 alert("You have been logged out.");
-
-                window.location.href =
-                    "login.html";
-
+                window.location.replace("login.html");
             }
         );
 
@@ -152,23 +156,12 @@ function requireAuthenticatedCustomer() {
 
     if (currentUser.role !== "Customer") {
 
-        /* Admins and Staff are already authenticated - send them to
-           their own working management page instead of bouncing them
-           out to the login screen. */
-
-        const destination =
-            currentUser.role === "Admin" ?
-                "admin.html" :
-                currentUser.role === "Staff" ?
-                    "staff.html" :
-                    "login.html";
-
         alert(
-            `The marketplace page is for Customer accounts. Redirecting you to the ${currentUser.role} panel.`
+            "This page currently supports Customer accounts only."
         );
 
         window.location.href =
-            destination;
+            "login.html";
 
         return false;
 
@@ -240,9 +233,16 @@ async function apiRequest(endpoint, options = {}) {
 
     try {
 
+        const token = sessionStorage.getItem(SESSION_TOKEN_KEY);
+        const requestHeaders = new Headers(options.headers || {});
+        if (token) requestHeaders.set("Authorization", `Bearer ${token}`);
+        requestHeaders.set("Cache-Control", "no-store");
+
         const response = await fetch(url, {
             ...options,
-            signal: controller.signal
+            headers: requestHeaders,
+            signal: controller.signal,
+            cache: "no-store"
         });
 
         /* PHP API returns JSON */
@@ -262,6 +262,13 @@ async function apiRequest(endpoint, options = {}) {
 
         }
 
+
+        if (response.status === 401) {
+            if (window.librowseAuth) window.librowseAuth.clearSession();
+            else { sessionStorage.removeItem(SESSION_TOKEN_KEY); sessionStorage.removeItem(SESSION_USER_KEY); }
+            window.location.replace("login.html");
+            throw new Error("Your session has expired. Please sign in again.");
+        }
 
         /* response.ok = success */
         if (!response.ok) {
@@ -355,101 +362,31 @@ function formatPrice(price) {
 /* Fetch books, catalog, and user data from API */
 
 async function loadBooks() {
-
-    const bookList =
-        document.getElementById("book-list");
-
+    const bookList = document.getElementById("book-list");
     try {
-
-        bookList.innerHTML = `
-            <tr>
-                <td colspan="10">
-                    Loading books...
-                </td>
-            </tr>
-        `;
-
-
-        /* Fetch multiple endpoints at once */
-
-        /* Fetch multiple endpoints at once */
-
+        if (bookList) {
+            bookList.innerHTML = `<tr><td colspan="10">Loading books...</td></tr>`;
+        }
         const results = await Promise.all([
-
             apiRequest("user_books.php"),
-
             apiRequest("books_catalog.php"),
-
             apiRequest("user.php")
-
         ]);
-
-
         bookListings = results[0];
-
         booksCatalog = results[1];
-
         users = results[2];
-
-
-        /* Reset maps */
-
-        /* Reset maps */
-
         bookMap = {};
-
         userMap = {};
-
         inventoryMap = {};
-
-
-        /* Create book lookup map */
-
-        booksCatalog.forEach(function (book) {
-
-            bookMap[book.book_id] = book;
-
-        });
-
-
-        /* Create user lookup map */
-
-        users.forEach(function (user) {
-
-            userMap[user.user_id] = user;
-
-        });
-
-
-        /* Create inventory/listing lookup map */
-
-        bookListings.forEach(function (listing) {
-
-            inventoryMap[listing.inventory_id] =
-                listing;
-
-        });
-
-
-        renderBooks(bookListings);
-
-
+        booksCatalog.forEach(book => { bookMap[book.book_id] = book; });
+        users.forEach(user => { userMap[user.user_id] = user; });
+        bookListings.forEach(listing => { inventoryMap[listing.inventory_id] = listing; });
+        if (bookList) renderBooks(bookListings);
     } catch (error) {
-
-        bookList.innerHTML = `
-            <tr>
-                <td colspan="10">
-                    Unable to connect to the back-end.
-                </td>
-            </tr>
-        `;
-
+        if (bookList) bookList.innerHTML = `<tr><td colspan="10">Unable to connect to the back-end.</td></tr>`;
         console.error(error);
-
     }
-
 }
-
 
 /* DISPLAY BOOKS */
 
@@ -1433,6 +1370,9 @@ async function loadTransactions() {
             "transaction-list"
         );
 
+    if (!transactionList) {
+        return;
+    }
 
     try {
 
@@ -1911,126 +1851,31 @@ async function submitReport(event) {
 
 
 /* EVENT LISTENERS */
-
-/* Initialize event handlers when page loads */
-
-document.addEventListener(
-    "DOMContentLoaded",
-    function () {
-
-        loadCurrentUser();
-
-        if (!requireAuthenticatedCustomer()) {
-            return;
-        }
-
-        updateAuthStatusUI();
-
-        applyCurrentUserToForms();
-
-
-        /* SEARCH */
-
-        const searchForm =
-            document.getElementById(
-                "search-form"
-            );
-
-
-        searchForm.addEventListener(
-            "submit",
-            function (event) {
-
-                event.preventDefault();
-
-                filterBooks();
-
-            }
-        );
-
-
-        /* Filter on dropdown change */
-
-        document
-            .getElementById(
-                "filter-type"
-            )
-            .addEventListener(
-                "change",
-                filterBooks
-            );
-
-
-        document
-            .getElementById(
-                "filter-condition"
-            )
-            .addEventListener(
-                "change",
-                filterBooks
-            );
-
-
-        /* Filter as user types */
-
-        document
-            .getElementById(
-                "search-book"
-            )
-            .addEventListener(
-                "input",
-                filterBooks
-            );
-
-
-        /* LIST BOOK */
-
-        document
-            .getElementById(
-                "list-book-form"
-            )
-            .addEventListener(
-                "submit",
-                submitBookListing
-            );
-
-
-        /* REFUND */
-
-        document
-            .getElementById(
-                "refund-form"
-            )
-            .addEventListener(
-                "submit",
-                submitRefund
-            );
-
-
-        /* REPORT */
-
-        document
-            .getElementById(
-                "report-form"
-            )
-            .addEventListener(
-                "submit",
-                submitReport
-            );
-
-
-        /* INITIAL DATA */
-
-        /* Load books and transactions on page open */
-
-        loadBooks()
-            .then(function () {
-
-                loadTransactions();
-
-            });
-
-        loadCategories();
-
+document.addEventListener("DOMContentLoaded", async function () {
+    if (window.librowseAuthReady) {
+        if (!await window.librowseAuthReady) return;
     }
-);
+
+    loadCurrentUser();
+    if (!requireAuthenticatedCustomer()) return;
+
+    updateAuthStatusUI();
+    applyCurrentUserToForms();
+
+    const searchForm = document.getElementById("search-form");
+    searchForm?.addEventListener("submit", event => { event.preventDefault(); filterBooks(); });
+    document.getElementById("filter-type")?.addEventListener("change", filterBooks);
+    document.getElementById("filter-condition")?.addEventListener("change", filterBooks);
+    document.getElementById("search-book")?.addEventListener("input", filterBooks);
+    document.getElementById("list-book-form")?.addEventListener("submit", submitBookListing);
+    document.getElementById("refund-form")?.addEventListener("submit", submitRefund);
+    document.getElementById("report-form")?.addEventListener("submit", submitReport);
+
+    const hasBrowse = !!document.getElementById("book-list");
+    const hasTransactions = !!document.getElementById("transaction-list");
+    const hasCategories = !!document.getElementById("book-category-options") || !!document.getElementById("filter-category-options");
+
+    if (hasBrowse || hasTransactions) await loadBooks();
+    if (hasTransactions) await loadTransactions();
+    if (hasCategories) await loadCategories();
+});

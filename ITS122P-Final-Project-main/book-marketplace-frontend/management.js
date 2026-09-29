@@ -1,5 +1,14 @@
-
-const MANAGEMENT_API_BASE = "http://127.0.0.1:8000/api";
+function librowseApiBase() {
+    if (window.LIBROWSE_API_BASE) return String(window.LIBROWSE_API_BASE).replace(/\/$/, '');
+    const host = window.location.hostname || '127.0.0.1';
+    const port = window.location.port;
+    if (port === '8000') {
+        const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:';
+        return `${protocol}//${host}:8000/api`;
+    }
+    return '/api';
+}
+const MANAGEMENT_API_BASE = librowseApiBase();
 
 const managementState = {
     user: null,
@@ -31,12 +40,21 @@ function mgRole(value) {
 }
 
 async function mgApi(endpoint, options = {}) {
-    const response = await fetch(`${MANAGEMENT_API_BASE}/${endpoint}`, options);
+    const token = sessionStorage.getItem("librowseSessionToken");
+    const headers = new Headers(options.headers || {});
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+    headers.set("Cache-Control", "no-store");
+    const response = await fetch(`${MANAGEMENT_API_BASE}/${endpoint}`, { ...options, headers, cache: "no-store" });
     const text = await response.text();
     let data = {};
     try { data = text ? JSON.parse(text) : {}; }
     catch { throw new Error("Backend returned invalid JSON."); }
 
+    if (response.status === 401) {
+        if (window.librowseAuth) window.librowseAuth.clearSession();
+        window.location.replace("login.html");
+        throw new Error("Your session has expired.");
+    }
     if (!response.ok) {
         throw new Error(data.error || `Request failed (${response.status}).`);
     }
@@ -45,15 +63,15 @@ async function mgApi(endpoint, options = {}) {
 
 function currentUserFromStorage() {
     try {
-        const raw = localStorage.getItem("librowseCurrentUser");
+        const raw = sessionStorage.getItem("librowseCurrentUser");
         return raw ? JSON.parse(raw) : null;
     } catch {
         return null;
     }
 }
 
-function requireManagementRole(expectedRole) {
-    const user = currentUserFromStorage();
+async function requireManagementRole(expectedRole) {
+    const user = window.librowseAuth ? await window.librowseAuth.requireRole(expectedRole) : currentUserFromStorage();
 
     if (!user || !user.user_id) {
         window.location.href = "login.html";
@@ -99,9 +117,10 @@ function goBackToMarketplace() {
     window.location.href = "index.html";
 }
 
-function logoutManagement() {
-    localStorage.removeItem("librowseCurrentUser");
-    window.location.href = "login.html";
+async function logoutManagement() {
+    if (window.librowseAuth) await window.librowseAuth.logout();
+    else { sessionStorage.removeItem("librowseSessionToken"); sessionStorage.removeItem("librowseCurrentUser"); }
+    window.location.replace("login.html");
 }
 
 function renderSession() {
@@ -848,8 +867,9 @@ function refreshRenderedData() {
 }
 
 async function initManagementPage() {
+    if (window.librowseAuthReady && !await window.librowseAuthReady) return;
     const expectedRole = document.body.dataset.managementRole;
-    if (!requireManagementRole(expectedRole)) return;
+    if (!await requireManagementRole(expectedRole)) return;
 
     renderSession();
 
